@@ -1,7 +1,7 @@
 import numbers
 import torch.nn as nn
 import torch 
-from torch import Tensor
+from torch import ParameterDict, Tensor
 from torch.nn.parameter import Parameter
 
 
@@ -11,20 +11,20 @@ class layers(nn.Module):
         self.in_features=in_features
         self.out_features=out_features
         self.headersNum=headersNum
-        self.originList=[]
-        self.alphaList=[]
-        self.weightlist=[]
+        self.originList=nn.ParameterList()
+        self.alphaList=nn.ParameterList()
+        self.weightlist=nn.ParameterList()
         self.atom_features=out_features // headersNum
         self.last_features=self.atom_features+ out_features % headersNum 
         for _ in range(headersNum-1):
-            self.originList.append(Parameter(torch.FloatTensor(self.atom_features)))
-            self.alphaList.append(Parameter(torch.FloatTensor(self.atom_features)))
-            self.weightlist.append(Parameter(torch.FloatTensor(self.in_features,self.atom_features)))
-        self.originList.append(Parameter(torch.FloatTensor(self.last_features)))
-        self.alphaList.append(Parameter(torch.FloatTensor(self.last_features)))
-        self.weightlist.append(Parameter(torch.FloatTensor(self.in_features,self.last_features)))
+            self.originList.append(nn.Parameter(torch.DoubleTensor(self.atom_features).cuda().requires_grad_()))
+            self.alphaList.append(nn.Parameter(torch.DoubleTensor(self.atom_features).cuda().requires_grad_()))
+            self.weightlist.append(nn.Parameter(torch.DoubleTensor(self.in_features,self.atom_features).cuda().requires_grad_()))
+        self.originList.append(nn.Parameter(torch.DoubleTensor(self.last_features).cuda().requires_grad_()))
+        self.alphaList.append(nn.Parameter(torch.DoubleTensor(self.last_features).cuda().requires_grad_()))
+        self.weightlist.append(nn.Parameter(torch.DoubleTensor(self.in_features,self.last_features).cuda().requires_grad_()))
 
-        self.bias=Parameter(data=torch.FloatTensor(out_features))
+        self.bias=Parameter(data=torch.DoubleTensor(out_features))
         
         if(not bias):
             self.register_parameter("bias",None)
@@ -32,9 +32,12 @@ class layers(nn.Module):
     
     def initialise(self):
         for weight in self.weightlist:
+            weight.retain_grad()
             stdv=weight.size(1)
             weight.data.uniform_(-stdv,stdv)
         for origin_alpha,alpha in zip(self.originList,self.alphaList):
+            alpha.retain_grad()
+            origin_alpha.retain_grad()
             stdv=alpha.size(0)
             origin_alpha.data.uniform_(-stdv,stdv)
             alpha.data.uniform_(-stdv,stdv)
@@ -47,40 +50,27 @@ class layers(nn.Module):
         for weight,alpha_origin,alpha in zip (self.weightlist,self.originList,self.alphaList):
             #先做映射
             mx=x@weight
-
+            coef1=mx@alpha_origin
+            coef2=mx@alpha
             tensorList=[]
             for i in range(x.size(0)):
-                tensor=self.clacAttn(mx,i,adj,weight,alpha_origin,alpha)
+                tensor=self.clacAttn(mx,i,adj,weight,coef1,coef2)
                 tensorList.append(tensor)
 
             result_list.append(torch.vstack(tensorList))
 
-        return torch.hstack(result_list)
+        return torch.hstack(result_list).cuda()
 
     #multihead 计算 注意力机制
-    def clacAttn(self,mx:Tensor,loc:int,adj:Tensor,weight:Tensor,alpha_origin:Tensor,alpha:Tensor):
+    def clacAttn(self,mx:Tensor,loc:int,adj:Tensor,weight:Tensor,coef1:Tensor,coef2:Tensor):
         """计算 aplha(x_i,x_j)"""
-
-        x=mx
-        vector=x[loc,:]
-        
-        
-        coef1=vector@alpha_origin
-        x=x@alpha+coef1
+        x=coef1[loc]+coef2
         adj=adj[loc,:]
         
         x=torch.exp(x)
-        x[torch.where(adj==0)]=0
+        x=x*adj
         sum=x.sum(0)
         x/=sum
 
         return x@mx
-
-
-a=torch.Tensor([1,1,0])
-b=torch.Tensor([1,1,0])
-c=torch.Tensor([0,0,1])
-mx=torch.vstack([a,b,c])
-adj=mx
-
 
